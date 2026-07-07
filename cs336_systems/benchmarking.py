@@ -74,6 +74,7 @@ def main():
         config = yaml.safe_load(f)
 
     # 初始化参数
+    model_type = config['model']['model_type']
     device = torch.device(config['runtime']['device'])
     batch_size = config['data']['batch_size']
     context_length = config['model']['context_length']
@@ -82,6 +83,7 @@ def main():
     measured_steps = config['benchmark']['measured_steps']
     mode = config['benchmark']['mode']
     use_mixed_precision = config['runtime']['use_mixed_precision']
+    profile_memory = config['runtime']['profile_memory']
 
     # 创建模型
     model: BasicsTransformerLM = create_model(config['model']).to(device)
@@ -99,12 +101,16 @@ def main():
 
     model.train()
 
+    # warmup
     for t in warmup_pbar:
         run_step(inputs, targets, mode, model, optimizer, use_mixed_precision)
 
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
+    # measured
+    if profile_memory:
+        torch.cuda.memory._record_memory_history(max_entries=1000000)
     with nvtx.range('measured'):
         for t in measured_pbar:
             # start time
@@ -123,6 +129,11 @@ def main():
 
             # log
             measured_pbar.set_postfix(time_elapsed=time_elapsed)
+
+    # 结束内存记录
+    if profile_memory:
+        torch.cuda.memory._dump_snapshot(f'reports/memory_{model_type}_ctx{context_length}_{mode}.pickle')
+        torch.cuda.memory._record_memory_history(enabled=None)
 
     # 计算mean和std
     times = torch.tensor(time_elapsed_list)
