@@ -7,6 +7,7 @@ import torch
 import yaml
 import timeit
 from tqdm import tqdm
+from contextlib import nullcontext
 import torch.cuda.nvtx as nvtx
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
@@ -36,33 +37,28 @@ def create_optimizer(config, model:BasicsTransformerLM):
 
     return optimizer
 
-def run_step(inputs, targets, mode, model, optimizer):
-    # forward
-    if mode == 'forward':
+def run_step(inputs, targets, mode, model, optimizer, use_mixed_precision):
+    optimizer.zero_grad()
+
+    precision_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if use_mixed_precision else nullcontext()
+
+    with precision_ctx:
+        # forward
         with nvtx.range('forward'):
             logits = model(inputs)
+    
+        if mode != 'forward':
+            loss = cross_entropy(logits, targets)
 
     # backward
-    elif mode == 'forward_backward':
-        optimizer.zero_grad()
-        with nvtx.range('forward'):
-            logits = model(inputs)
+    if mode != 'forward':
         with nvtx.range('backward'):
-            loss = cross_entropy(logits, targets)
             loss.backward()
 
     # optimizer
-    elif mode == 'full_step':
-        optimizer.zero_grad()
-        with nvtx.range('forward'):
-            logits = model(inputs)
-        with nvtx.range('backward'):
-            loss = cross_entropy(logits, targets)
-            loss.backward()
+    if mode == 'full_step':
         with nvtx.range('optimizer'):
             optimizer.step()
-    else:
-        assert(False)
 
 def main():
     # 读取config
@@ -85,6 +81,7 @@ def main():
     warmup_steps = config['benchmark']['warmup_steps']
     measured_steps = config['benchmark']['measured_steps']
     mode = config['benchmark']['mode']
+    use_mixed_precision = config['runtime']['use_mixed_precision']
 
     # 创建模型
     model: BasicsTransformerLM = create_model(config['model']).to(device)
@@ -103,7 +100,7 @@ def main():
     model.train()
 
     for t in warmup_pbar:
-        run_step(inputs, targets, mode, model, optimizer)
+        run_step(inputs, targets, mode, model, optimizer, use_mixed_precision)
 
         if device.type == 'cuda':
             torch.cuda.synchronize()
@@ -115,7 +112,7 @@ def main():
                 torch.cuda.synchronize()
             start_time = timeit.default_timer()
 
-            run_step(inputs, targets, mode, model, optimizer)
+            run_step(inputs, targets, mode, model, optimizer, use_mixed_precision)
 
             # end time    
             if device.type == 'cuda':
@@ -137,7 +134,7 @@ def main():
     print('std=', std)
     print('warmup_stes',warmup_steps)
     print('measured_steps=',measured_steps)
-
+    print('use mixed precision=',use_mixed_precision)
 
 if __name__ == '__main__':
     main()

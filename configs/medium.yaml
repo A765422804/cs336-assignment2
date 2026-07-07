@@ -1,6 +1,6 @@
 model:
   vocab_size: 10000
-  context_length: 1024
+  context_length: 512
   d_model: 1024
   num_layers: 24
   num_heads: 16
@@ -18,8 +18,9 @@ data:
 
 runtime:
   device: cuda
+  use_mixed_precision: False
 
 benchmark:
-  warmup_steps: 2
+  warmup_steps: 5
   measured_steps: 10
   mode: full_step # forward forward_backward full_step

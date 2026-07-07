@@ -18,6 +18,7 @@ data:
 
 runtime:
   device: cuda
+  use_mixed_precision: True
 
 benchmark:
   warmup_steps: 5
