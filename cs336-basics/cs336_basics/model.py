@@ -10,6 +10,7 @@ import einx
 import torch
 import torch.nn as nn
 import torch.cuda.nvtx as nvtx
+from torch.utils.checkpoint import checkpoint
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -187,6 +188,7 @@ class BasicsTransformerLM(nn.Module):
         num_heads: int,
         d_ff: int,
         rope_theta: float | None = 10_000.0,
+        checkpoint_block_size: int = 0
     ):
         # Store the model configuration for serialization / deserialization
         self.config = {
@@ -220,6 +222,8 @@ class BasicsTransformerLM(nn.Module):
         # report number of parameters
         logger.info(f"number of non-embedding parameters: {self.get_num_params() / 1e6:.2f}M")
 
+        self.cbs = checkpoint_block_size
+
     def get_num_params(self) -> int:
         """
         Return the number of parameters in the model.
@@ -249,9 +253,24 @@ class BasicsTransformerLM(nn.Module):
         # x = self.positional_encoder(embedded_tokens, positions)
         x = embedded_tokens
 
-        for layer in self.layers:
-            # (batch size, sequence_length, d_model)
-            x = layer(x)
+
+
+        if self.cbs <= 0:
+            for layer in self.layers:
+                # (batch size, sequence_length, d_model)
+                x = layer(x)
+        else:
+            # 应用checkpoint
+            for start in range(0, len(self.layers), self.cbs):
+                end = min(start + self.cbs, len(self.layers))
+
+                def segment_fn(x, start=start, end=end):
+                    for layer in self.layers[start: end]:
+                        x = layer(x)
+                    return x
+
+                x = checkpoint(segment_fn, x, use_reentrant=False)
+        
         # (batch size, sequence_length, d_model)
         x = self.ln_final(x)
         # (batch size, sequence_length, vocab_size)
@@ -426,17 +445,17 @@ def scaled_dot_product_attention(
 
     d_k = K.shape[-1]
 
-    with nvtx.range('attention_qk_matmul'):
-        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+    # with nvtx.range('attention_qk_matmul'):
+    attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
 
     if mask is not None:
         attention_scores = torch.where(mask, attention_scores, float("-inf"))
 
-    with nvtx.range('attention_softmax'):
-        attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+    # with nvtx.range('attention_softmax'):
+    attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
 
-    with nvtx.range('attention_pv_matmul'):
-        attention_values = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    # with nvtx.range('attention_pv_matmul'):
+    attention_values = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
     
     return attention_values
 

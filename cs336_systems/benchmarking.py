@@ -21,7 +21,8 @@ def create_model(config):
         config['num_layers'],
         config['num_heads'],
         config['d_ff'],
-        config['rope_theta']
+        config['rope_theta'],
+        config['checkpoint_block_size']
     )
 
     return model
@@ -84,6 +85,7 @@ def main():
     mode = config['benchmark']['mode']
     use_mixed_precision = config['runtime']['use_mixed_precision']
     profile_memory = config['runtime']['profile_memory']
+    check_point_block_size = config['model']['checkpoint_block_size']
 
     # 创建模型
     model: BasicsTransformerLM = create_model(config['model']).to(device)
@@ -132,7 +134,7 @@ def main():
 
     # 结束内存记录
     if profile_memory:
-        torch.cuda.memory._dump_snapshot(f'reports/memory_{model_type}_ctx{context_length}_{mode}.pickle')
+        torch.cuda.memory._dump_snapshot(f'reports/memory_{model_type}_ctx{context_length}_{mode}_cbs{check_point_block_size}.pickle')
         torch.cuda.memory._record_memory_history(enabled=None)
 
     # 计算mean和std

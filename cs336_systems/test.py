@@ -1,46 +1,53 @@
 import torch
-from torch import nn
-from cs336_basics.nn_utils import cross_entropy
+from torch.utils.checkpoint import checkpoint
+from cs336_basics.model import RotaryEmbedding, TransformerBlock
 
-class ToyModel(nn.Module):
-    def __init__(self, in_features: int, out_features: int):
-        super().__init__()
-        self.fc1 = nn.Linear(in_features, 10, bias=False)
-        self.ln = nn.LayerNorm(10)
-        self.fc2 = nn.Linear(10, out_features, bias=False)
-        self.relu = nn.ReLU()
+# num_layers for this model is 32
+d_model, d_ff, num_heads, context_length = 2560, 10240, 16, 2048
+block = TransformerBlock(d_model=d_model, d_ff=d_ff, num_heads=num_heads, 
+positional_encoder=RotaryEmbedding(dim=d_model // num_heads, context_length=context_length))
 
-    def forward(self, x):
-        x = self.fc1(x)
-        print('first feed-forward layer', x.dtype)
-        x = self.relu(x)
-        print('relu', x.dtype)
-        x = self.ln(x)
-        print('layer norm', x.dtype)
-        x = self.fc2(x)
+# Fuse as much torch.compile will allow
+device = 'cuda'
+block.to(device)
+block = torch.compile(block, fullgraph=True)
+x = torch.randn((4, context_length, d_model), requires_grad=True, device=device)
+...
 
-        return x
+# Now logs the number of bytes saved
+total_size_bytes = 0
+def pack_hook(t):
+    if isinstance(t, torch.nn.Parameter):  # Skip logging parameters to avoid double counting
+        return t
+    global total_size_bytes
+    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
+    total_size_bytes += t.numel() * t.element_size()
+    print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
+    return t
 
-def main():
-    device = torch.device('cuda')
+def unpack_hook(t):
+    return t
 
-    model = ToyModel(10, 10).to(
-        device=device,
-        dtype=torch.float32
-    )
-    x = torch.rand(size=(10, 10), device=device, dtype=torch.float32)
-    target = torch.randint(low=0,high=10,size=(10,), device=device)
+def four_blocks(x):
+    x = block(x)
+    x = block(x)
+    x = block(x)
+    x = block(x)
+    return x
 
-    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        y = model(x)
-        print('model parameter:', next(model.parameters()).dtype)
-        print('logits:', y.dtype)
+def two_blocks(x):
+    x = block(x)
+    x = block(x)
+    return x
 
-        loss = cross_entropy(y, target)
-        print('loss:', loss.dtype)
+def four_blocks_checkpoint(x):
+    x = checkpoint(two_blocks, x, use_reentrant=False)
+    x = checkpoint(two_blocks, x, use_reentrant=False)
+    return x
 
-        loss.backward()
-        print('gradient', next(model.parameters()).grad.dtype)
+# Run forward pass, saving for backward
+with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+    y = four_blocks_checkpoint(x)
 
-if __name__ == '__main__':
-    main()
+print(f"Total size of saved tensors in single TransformerBlock: {total_size_bytes / 
+(1024**2):.2f} MiB")
