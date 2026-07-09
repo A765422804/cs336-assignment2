@@ -86,6 +86,7 @@ def main():
     use_mixed_precision = config['runtime']['use_mixed_precision']
     profile_memory = config['runtime']['profile_memory']
     check_point_block_size = config['model']['checkpoint_block_size']
+    is_model_compile = config['runtime']['is_model_compile']
 
     # 创建模型
     model: BasicsTransformerLM = create_model(config['model']).to(device)
@@ -97,7 +98,11 @@ def main():
     # 创建optimizer
     optimizer: AdamW = create_optimizer(config['optimizer'], model)
 
+    if is_model_compile:
+        model = torch.compile(model)
+
     time_elapsed_list = []
+    peak_memory_list = []
     warmup_pbar = tqdm(range(warmup_steps))
     measured_pbar = tqdm(range(measured_steps))
 
@@ -118,6 +123,7 @@ def main():
             # start time
             if device.type == 'cuda':
                 torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
             start_time = timeit.default_timer()
 
             run_step(inputs, targets, mode, model, optimizer, use_mixed_precision)
@@ -128,6 +134,7 @@ def main():
             end_time = timeit.default_timer()
             time_elapsed = end_time - start_time
             time_elapsed_list.append(time_elapsed)
+            peak_memory_list.append(torch.cuda.max_memory_allocated())
 
             # log
             measured_pbar.set_postfix(time_elapsed=time_elapsed)
@@ -139,15 +146,20 @@ def main():
 
     # 计算mean和std
     times = torch.tensor(time_elapsed_list)
-    mean = times.mean().item()
-    std = times.std().item()
+    times_mean = times.mean().item()
+    times_std = times.std().item()
+
+    peak_memory = torch.tensor(peak_memory_list, dtype=torch.float64)
+    memory_mean = peak_memory.mean().item() / 1024**3
+    memory_std = peak_memory.std().item()
 
     print('mode=',mode)
-    print('mean=',mean)
-    print('std=', std)
+    print('times_mean=',times_mean,' times_std=',times_std)
+    print('memory_mean=', memory_mean, ' memory_std=',memory_std)
     print('warmup_stes',warmup_steps)
     print('measured_steps=',measured_steps)
     print('use mixed precision=',use_mixed_precision)
+    print('is_model_compile=', is_model_compile)
 
 if __name__ == '__main__':
     main()
