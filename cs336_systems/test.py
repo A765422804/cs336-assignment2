@@ -1,53 +1,49 @@
+import os
+import timeit
 import torch
-from torch.utils.checkpoint import checkpoint
-from cs336_basics.model import RotaryEmbedding, TransformerBlock
+import torch.distributed as dist
+import torch.multiprocessing as mp
 
-# num_layers for this model is 32
-d_model, d_ff, num_heads, context_length = 2560, 10240, 16, 2048
-block = TransformerBlock(d_model=d_model, d_ff=d_ff, num_heads=num_heads, 
-positional_encoder=RotaryEmbedding(dim=d_model // num_heads, context_length=context_length))
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '29500'
+    dist.init_process_group('gloo',rank=rank, world_size=world_size)
 
-# Fuse as much torch.compile will allow
-device = 'cuda'
-block.to(device)
-block = torch.compile(block, fullgraph=True)
-x = torch.randn((4, context_length, d_model), requires_grad=True, device=device)
-...
+def distributed_demo(rank, world_size, data_size):
+    setup(rank, world_size)
+    data = torch.randint(0, 10, (data_size // 4,), dtype=torch.float32)
 
-# Now logs the number of bytes saved
-total_size_bytes = 0
-def pack_hook(t):
-    if isinstance(t, torch.nn.Parameter):  # Skip logging parameters to avoid double counting
-        return t
-    global total_size_bytes
-    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
-    total_size_bytes += t.numel() * t.element_size()
-    print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
-    return t
+    # warmup
+    for _ in range(5):
+        dist.all_reduce(data, async_op=False)
 
-def unpack_hook(t):
-    return t
+    # benchmark
+    elapsed_time_list = []
+    for _ in range(5):
+        dist.barrier()
+        start_time = timeit.default_timer()
+        dist.all_reduce(data, async_op=False)
+        end_time = timeit.default_timer()
+        elapsed_time_list.append(end_time - start_time)
+    
+    # gather
+    total_elapsed_time_list = [None] * world_size
+    dist.all_gather_object(total_elapsed_time_list, elapsed_time_list)
+    if rank == 0:
+        print('------world_size =', world_size,' data_size =', data_size,'------')
+        rank_mean = [sum(x)/ len(x) for x in total_elapsed_time_list]
+        total_mean = sum(sum(x) for x in total_elapsed_time_list) / sum(len(x) for x in total_elapsed_time_list)
+        total_max = max(max(x) for x in total_elapsed_time_list)
 
-def four_blocks(x):
-    x = block(x)
-    x = block(x)
-    x = block(x)
-    x = block(x)
-    return x
+        print('rank_mean =', rank_mean)
+        print('total_mean =',total_mean)
+        print('total_max =', total_max)
 
-def two_blocks(x):
-    x = block(x)
-    x = block(x)
-    return x
+    dist.destroy_process_group()
 
-def four_blocks_checkpoint(x):
-    x = checkpoint(two_blocks, x, use_reentrant=False)
-    x = checkpoint(two_blocks, x, use_reentrant=False)
-    return x
-
-# Run forward pass, saving for backward
-with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-    y = four_blocks_checkpoint(x)
-
-print(f"Total size of saved tensors in single TransformerBlock: {total_size_bytes / 
-(1024**2):.2f} MiB")
+if __name__ == '__main__':
+    world_size_list = [2, 4, 6]
+    data_size_list = [1000000, 10000000, 100000000, 1000000000] # bytes
+    for data_size in data_size_list:
+        for world_size in world_size_list:
+            mp.spawn(fn=distributed_demo, args=(world_size,data_size), nprocs=world_size, join=True)
