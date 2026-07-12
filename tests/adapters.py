@@ -33,6 +33,7 @@ def get_flashattention_autograd_function_triton() -> type:
     # For example: return MyTritonFlashAttentionAutogradFunctionClass
     return FlashAttentionTriton
 
+from cs336_systems.ddp import DDP
 
 def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     """
@@ -52,8 +53,7 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
         Instance of a DDP class.
     """
     # For example: return DDP(module)
-    raise NotImplementedError
-
+    return DDP(module)
 
 def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
     """
@@ -67,7 +67,7 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
             Optimizer being used with the DDP-wrapped model.
     """
     # For example: ddp_model.finish_gradient_synchronization()
-    raise NotImplementedError
+    ddp_model.finish_gradient_sync()
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:
