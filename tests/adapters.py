@@ -117,6 +117,7 @@ def fsdp_gather_full_params(fsdp_model: torch.nn.Module) -> dict[str, torch.Tens
     """
     raise NotImplementedError
 
+from cs336_systems.sharded_optimizer import ShardedOptimizer
 
 def get_sharded_optimizer(params, optimizer_cls: type[torch.optim.Optimizer], **kwargs) -> torch.optim.Optimizer:
     """
@@ -134,4 +135,5 @@ def get_sharded_optimizer(params, optimizer_cls: type[torch.optim.Optimizer], **
     Returns:
         Instance of sharded optimizer.
     """
-    raise NotImplementedError
+    
+    return ShardedOptimizer(params, optimizer_cls, **kwargs)
