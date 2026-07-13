@@ -18,10 +18,10 @@ def create_model():
     return BasicsTransformerLM(
         10000,
         512,
-        2560,
-        32,
-        32,
-        10240,
+        1280,
+        36,
+        20,
+        5120,
         10000
     )
 
