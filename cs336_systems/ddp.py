@@ -21,8 +21,20 @@ class DDP(nn.Module):
         backward 之后 step 之前，把所有的device的梯度平均
         '''
         world_size = dist.get_world_size()
+        grad_list = []
+        
         with torch.no_grad():
             for parameter in self.module.parameters():
                 if parameter.grad is not None:
-                    dist.all_reduce(parameter.grad, async_op=False)
-                    parameter.grad /= world_size
+                    grad_list.append(parameter.grad)
+            
+            flat_grad = torch._utils._flatten_dense_tensors(grad_list)
+            dist.all_reduce(flat_grad, async_op=False)
+            flat_grad /= world_size
+            reduced_grad_list = torch._utils._unflatten_dense_tensors(flat_grad, grad_list)
+
+            grad_idx = 0
+            for parameter in self.module.parameters():
+                if parameter.grad is not None:
+                    parameter.grad = reduced_grad_list[grad_idx]
+                    grad_idx += 1
